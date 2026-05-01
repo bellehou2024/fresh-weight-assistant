@@ -2,14 +2,14 @@
   "name": "轻盈日记",
   "short_name": "轻盈日记",
   "description": "简单的拍照饮食和运动记录 PWA",
-  "start_url": "./",
-  "scope": "./",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#f7fbf6",
   "theme_color": "#f7fbf6",
   "icons": [
     {
-      "src": "./icon.svg",
+      "src": "/public/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"
