@@ -1,16 +1,17 @@
-const CACHE_NAME = "fresh-weight-assistant-v14";
+const CACHE_NAME = "fresh-weight-assistant-v15";
 const ASSET_PATHS = [
-  "./",
-  "./index.html",
-  "./src/main.js",
-  "./src/styles.css",
-  "./src/pwa.js",
-  "./src/domain/health.js",
-  "./src/domain/id.js",
-  "./src/storage/localStore.js",
-  "./src/sync/syncService.js",
-  "./public/manifest.webmanifest",
-  "./public/icon.svg"
+  "/",
+  "/index.html",
+  "/404.html",
+  "/src/main.js",
+  "/src/styles.css",
+  "/src/pwa.js",
+  "/src/domain/health.js",
+  "/src/domain/id.js",
+  "/src/storage/localStore.js",
+  "/src/sync/syncService.js",
+  "/public/manifest.webmanifest",
+  "/public/icon.svg"
 ];
 
 function assetUrl(path) {
