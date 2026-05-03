@@ -1,7 +1,7 @@
 {
   "name": "轻盈日记",
   "short_name": "轻盈日记",
-  "description": "简单的拍照饮食和运动记录 PWA",
+  "description": "拍照热量记录、轻断食和身体档案 PWA",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
