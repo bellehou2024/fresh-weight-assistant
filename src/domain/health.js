@@ -81,6 +81,11 @@ export function calculateTodayDeficit({ baseCalories, exerciseCalories = 0, inta
   return calculateDeficit({ baseCalories, exerciseCalories, intakeCalories });
 }
 
+export function calculateTrackedDeficit({ hasIntakeRecord, baseCalories, exerciseCalories = 0, intakeCalories }) {
+  if (!hasIntakeRecord) return null;
+  return calculateTodayDeficit({ baseCalories, exerciseCalories, intakeCalories });
+}
+
 export function getDeficitMessage(deficit) {
   if (deficit === null || deficit === undefined) return "填写摄入后，才会显示今日估算缺口。";
   if (deficit > 800) return "今天缺口偏大，别硬扛，记得吃够蛋白质和好好睡觉。";
