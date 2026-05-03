@@ -7,7 +7,7 @@ import {
   calculateBmi,
   calculateCalorieRemaining,
   calculateGoalRemainingKg,
-  calculateTodayDeficit,
+  calculateTrackedDeficit,
   createWeightChartPoints,
   estimateBaseCalories,
   estimateExerciseCalories,
@@ -19,7 +19,7 @@ import {
   createDefaultFastingPlan,
   createFastingLog,
   formatDuration,
-  getFastingStatus
+  getVisibleFastingStatus
 } from "./domain/fasting.js";
 import { createLocalId } from "./domain/id.js";
 import { createLocalStore } from "./storage/localStore.js";
@@ -255,14 +255,14 @@ function renderExerciseEntry(entry) {
 
 function renderFasting() {
   const plan = getFastingPlan();
-  const status = getFastingStatus({ plan });
   const latest = [...state.fastingLogs].sort((a, b) => String(b.createdAt ?? b.id).localeCompare(String(a.createdAt ?? a.id)))[0];
+  const status = getVisibleFastingStatus({ plan, latestLog: latest });
   return `
     <section class="card fasting-hero">
       <p class="muted">当前方案 ${plan.planType}</p>
       <h2>${status.label}</h2>
       <div class="fasting-clock">${status.remainingMs === null ? "--" : formatDuration(status.remainingMs)}</div>
-      <p class="note">${status.status === "eating" ? "距离进食窗口结束" : "距离可以进食"}</p>
+      <p class="note">${fastingStatusNote(status.status)}</p>
       <div class="button-row">
         <button class="primary-button" data-action="start-fasting">开始断食</button>
         <button class="secondary-button" data-action="end-fasting">结束断食</button>
@@ -714,7 +714,12 @@ function getTodaySummary() {
     heightCm: Number(state.profile.heightCm)
   });
   const budget = Number(state.profile.dailyCalorieBudget || DAILY_CALORIE_BUDGET);
-  const deficit = calculateTodayDeficit({ baseCalories, exerciseCalories, intakeCalories });
+  const deficit = calculateTrackedDeficit({
+    hasIntakeRecord: state.foodEntries.length > 0,
+    baseCalories,
+    exerciseCalories,
+    intakeCalories
+  });
   const remainingCalories = calculateCalorieRemaining({ budget, intakeCalories });
   const budgetProgress = budget ? Math.min(100, Math.round((intakeCalories / budget) * 100)) : 0;
   return { intakeCalories, exerciseCalories, baseCalories, budget, deficit, remainingCalories, budgetProgress };
@@ -795,6 +800,15 @@ function confidenceLabel(value) {
 
 function statusLabel(value) {
   return { idle: "未开始", fasting: "断食中", eating: "进食中", completed: "已结束" }[value] ?? "记录";
+}
+
+function fastingStatusNote(value) {
+  return {
+    idle: "点击开始断食后，才会记录今天的状态。",
+    fasting: "距离可以进食",
+    eating: "距离进食窗口结束",
+    completed: "今天的轻断食记录已结束"
+  }[value] ?? "轻轻记录，不用硬撑。";
 }
 
 function formatWeightInput(value) {
