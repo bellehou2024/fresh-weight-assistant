@@ -64,6 +64,28 @@ export function getFastingStatus({ plan, now = new Date() }) {
   };
 }
 
+export function getVisibleFastingStatus({ plan, latestLog, now = new Date() }) {
+  if (!latestLog) {
+    return {
+      status: "idle",
+      label: "未开始",
+      remainingMs: null,
+      targetAt: null
+    };
+  }
+
+  if (latestLog.status === "completed") {
+    return {
+      status: "completed",
+      label: "已结束",
+      remainingMs: null,
+      targetAt: latestLog.fastingEndAt ?? null
+    };
+  }
+
+  return getFastingStatus({ plan, now });
+}
+
 export function formatDuration(ms) {
   const minutes = Math.max(0, Math.ceil(Number(ms || 0) / MINUTE_MS));
   const hours = Math.floor(minutes / 60);
