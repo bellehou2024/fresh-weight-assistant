@@ -1,4 +1,4 @@
-const CACHE_NAME = "fresh-weight-assistant-v15";
+const CACHE_NAME = "fresh-weight-assistant-v16";
 const ASSET_PATHS = [
   "/",
   "/index.html",
@@ -6,9 +6,12 @@ const ASSET_PATHS = [
   "/src/main.js",
   "/src/styles.css",
   "/src/pwa.js",
+  "/src/domain/fasting.js",
+  "/src/domain/foodAnalysis.js",
   "/src/domain/health.js",
   "/src/domain/id.js",
   "/src/storage/localStore.js",
+  "/src/sync/aiFoodService.js",
   "/src/sync/syncService.js",
   "/public/manifest.webmanifest",
   "/public/icon.svg"
