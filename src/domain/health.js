@@ -15,6 +15,7 @@ export const EXERCISES = [
 
 export const WATER_TARGET_ML = 1850;
 export const WATER_STEP_ML = 50;
+export const DAILY_CALORIE_BUDGET = 1350;
 
 const intensityMultiplier = {
   easy: 0.85,
@@ -69,6 +70,15 @@ export function estimateExerciseCalories({ met, weightKg, minutes, intensity = "
 export function calculateDeficit({ baseCalories, exerciseCalories = 0, intakeCalories }) {
   if (intakeCalories === null || intakeCalories === undefined || intakeCalories === "") return null;
   return Math.round(Number(baseCalories || 0) + Number(exerciseCalories || 0) - Number(intakeCalories));
+}
+
+export function calculateCalorieRemaining({ budget = DAILY_CALORIE_BUDGET, intakeCalories = 0 }) {
+  if (budget === null || budget === undefined || budget === "") return null;
+  return Math.round(Number(budget) - Number(intakeCalories || 0));
+}
+
+export function calculateTodayDeficit({ baseCalories, exerciseCalories = 0, intakeCalories }) {
+  return calculateDeficit({ baseCalories, exerciseCalories, intakeCalories });
 }
 
 export function getDeficitMessage(deficit) {
