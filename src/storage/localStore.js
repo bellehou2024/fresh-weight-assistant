@@ -1,6 +1,6 @@
 const DB_NAME = "fresh-weight-assistant";
-const DB_VERSION = 1;
-const STORES = ["dailyLogs", "foodEntries", "exerciseEntries", "profile", "syncQueue"];
+const DB_VERSION = 2;
+const STORES = ["dailyLogs", "foodEntries", "exerciseEntries", "fastingLogs", "profile", "syncQueue"];
 
 export function createMemoryAdapter() {
   const buckets = new Map(STORES.map((name) => [name, new Map()]));
@@ -35,7 +35,7 @@ export function createIndexedDbAdapter() {
         for (const storeName of STORES) {
           if (!db.objectStoreNames.contains(storeName)) {
             const store = db.createObjectStore(storeName);
-            if (["foodEntries", "exerciseEntries"].includes(storeName)) {
+            if (["foodEntries", "exerciseEntries", "fastingLogs"].includes(storeName)) {
               store.createIndex("date", "date", { unique: false });
             }
           }
@@ -125,6 +125,15 @@ export function createLocalStore(adapter = createIndexedDbAdapter()) {
     },
     listAllExerciseEntries() {
       return adapter.list("exerciseEntries");
+    },
+    saveFastingLog(entry) {
+      return adapter.put("fastingLogs", withDefaults(entry), entry.id);
+    },
+    listFastingLogs(date) {
+      return adapter.listByIndex("fastingLogs", "date", date);
+    },
+    listAllFastingLogs() {
+      return adapter.list("fastingLogs");
     },
     listDailyLogs() {
       return adapter.list("dailyLogs");
