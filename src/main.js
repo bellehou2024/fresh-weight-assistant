@@ -1,11 +1,13 @@
 import {
+  DAILY_CALORIE_BUDGET,
   EXERCISES,
   WATER_STEP_ML,
   WATER_TARGET_ML,
   adjustWaterMl,
   calculateBmi,
-  calculateDeficit,
+  calculateCalorieRemaining,
   calculateGoalRemainingKg,
+  calculateTodayDeficit,
   createWeightChartPoints,
   estimateBaseCalories,
   estimateExerciseCalories,
@@ -13,8 +15,15 @@ import {
   getDeficitMessage,
   kgToJin
 } from "./domain/health.js";
+import {
+  createDefaultFastingPlan,
+  createFastingLog,
+  formatDuration,
+  getFastingStatus
+} from "./domain/fasting.js";
 import { createLocalId } from "./domain/id.js";
 import { createLocalStore } from "./storage/localStore.js";
+import { analyzeFoodPhoto, isAiConfigured } from "./sync/aiFoodService.js";
 import { createSyncService, getSyncConfig, saveSyncConfig } from "./sync/syncService.js";
 import "./pwa.js";
 
@@ -23,11 +32,12 @@ const app = document.querySelector("#app");
 const today = new Date().toISOString().slice(0, 10);
 
 const state = {
-  tab: "today",
-  profile: { nickname: "", heightCm: 156, weightKg: 51, targetWeightKg: "" },
+  tab: "record",
+  profile: normalizeProfile(null),
   dailyLog: null,
   foodEntries: [],
   exerciseEntries: [],
+  fastingLogs: [],
   dailyLogs: [],
   syncMessage: "本地保存",
   syncConfig: getSyncConfig(),
@@ -37,8 +47,7 @@ const state = {
 await boot();
 
 async function boot() {
-  const profile = await store.getProfile();
-  if (profile) state.profile = profile;
+  state.profile = normalizeProfile(await store.getProfile());
   await loadDay();
   await loadDailyLogs();
   state.session = createSyncService().handleAuthRedirect();
@@ -49,12 +58,12 @@ async function loadDay() {
   state.dailyLog = (await store.getDailyLog(today)) ?? {
     date: today,
     weightKg: state.profile.weightKg,
-    waterMl: 0,
-    intakeCalories: ""
+    waterMl: 0
   };
   state.dailyLog = migrateDailyLog(state.dailyLog);
   state.foodEntries = await store.listFoodEntries(today);
   state.exerciseEntries = await store.listExerciseEntries(today);
+  state.fastingLogs = await store.listFastingLogs(today);
 }
 
 async function loadDailyLogs() {
@@ -63,10 +72,9 @@ async function loadDailyLogs() {
 
 function render() {
   const content = {
-    today: renderToday,
-    food: renderFood,
-    exercise: renderExercise,
-    trends: renderTrends
+    record: renderRecord,
+    fasting: renderFasting,
+    profile: renderProfile
   }[state.tab]();
 
   app.innerHTML = `
@@ -92,158 +100,150 @@ function greeting() {
 }
 
 function renderSyncBar() {
-  const label = state.session ? "已登录，记录会尝试同步" : state.syncConfig.url ? "同步已配置，登录后可跨设备" : "未配置同步，先本地保存";
-  return `<div class="sync-bar"><span>${label}</span><small>${escapeHtml(state.syncMessage)}</small></div>`;
+  const aiLabel = isAiConfigured(state.syncConfig) ? "AI 可用" : "AI 未配置";
+  const syncLabel = state.session ? "已登录" : state.syncConfig.url ? "同步已配置" : "本地保存";
+  return `<div class="sync-bar"><span>${syncLabel} · ${aiLabel}</span><small>${escapeHtml(state.syncMessage)}</small></div>`;
 }
 
-function renderToday() {
-  const log = state.dailyLog;
-  const exerciseCalories = totalExerciseCalories();
-  const baseCalories = estimateBaseCalories({
-    weightKg: Number(log.weightKg || state.profile.weightKg),
-    heightCm: Number(state.profile.heightCm)
-  });
-  const deficit = calculateDeficit({
-    baseCalories,
-    exerciseCalories,
-    intakeCalories: log.intakeCalories
-  });
-  const bmi = calculateBmi({ weightKg: Number(log.weightKg), heightCm: Number(state.profile.heightCm) });
-
+function renderRecord() {
+  const summary = getTodaySummary();
   return `
-    <section class="card">
-      <div class="hero-card">
+    <section class="card record-hero">
       <div>
-        <p class="muted">今日体重</p>
-        <label class="weight-line weight-edit">
-          <input data-log-field="weightKg" type="number" inputmode="decimal" step="0.01" value="${escapeAttr(formatWeightInput(log.weightKg))}" aria-label="今日体重 kg">
-          <span>kg</span>
-        </label>
-        <p class="muted">${log.weightKg ? `${kgToJin(Number(log.weightKg))} 斤 · BMI ${bmi ?? "-"}` : "轻轻记录，不用焦虑"}</p>
+        <p class="muted">今日摄入</p>
+        <div class="kcal-line">${summary.intakeCalories}<span>kcal</span></div>
+        <p class="note">预算 ${summary.budget} kcal · 还可吃 ${summary.remainingCalories ?? "--"} kcal</p>
       </div>
+      <div class="hero-meter" style="--progress:${summary.budgetProgress}%">
+        <strong>${summary.budgetProgress}%</strong>
+        <span>预算</span>
       </div>
     </section>
 
-    <section class="card water-card">
-      <div class="section-title">
-        <h2>饮水量</h2>
-        <span>${Number(log.waterMl || 0)} / ${WATER_TARGET_ML} ml</span>
-      </div>
-      <div class="water-controls">
-        <button class="round-button" data-water-delta="-1" aria-label="减少 ${WATER_STEP_ML} 毫升">-</button>
-        <div>
-          <input class="water-range" data-water-range type="range" min="0" max="${WATER_TARGET_ML}" step="${WATER_STEP_ML}" value="${Number(log.waterMl || 0)}" aria-label="饮水量 ml">
-          <p class="note">每日目标 ${WATER_TARGET_ML} ml，每次调整 ${WATER_STEP_ML} ml。</p>
-        </div>
-        <button class="round-button" data-water-delta="1" aria-label="增加 ${WATER_STEP_ML} 毫升">+</button>
-      </div>
+    <section class="metric-grid">
+      <article class="mini-card"><span>运动消耗</span><strong>${summary.exerciseCalories} kcal</strong></article>
+      <article class="mini-card"><span>估算缺口</span><strong>${summary.deficit ?? "--"} kcal</strong></article>
     </section>
+    <p class="outside-note">${getDeficitMessage(summary.deficit)}</p>
 
     <section class="card">
       <div class="section-title">
-        <h2>今日热量</h2>
-        <span>估算</span>
+        <h2>热量记录</h2>
+        <span>${state.foodEntries.length} 条</span>
       </div>
-      <label class="line-input">
-        <span>摄入 kcal</span>
-        <input data-log-field="intakeCalories" type="number" inputmode="numeric" value="${escapeAttr(log.intakeCalories)}" placeholder="可选">
-      </label>
-      <div class="calorie-row">
-        <div><strong>${baseCalories ?? "-"}</strong><span>基础</span></div>
-        <div><strong>${exerciseCalories}</strong><span>运动</span></div>
-        <div><strong>${deficit ?? "-"}</strong><span>缺口</span></div>
-      </div>
-      <p class="note">${getDeficitMessage(deficit)}</p>
-    </section>
-  `;
-}
-
-function renderFood() {
-  return `
-    <section class="card">
-      <div class="section-title">
-        <h2>拍照记一餐</h2>
-        <span>备注可空</span>
+      <div class="meal-grid">
+        ${["早餐", "午餐", "晚餐", "加餐"].map(renderMealCard).join("")}
       </div>
       <form id="food-form" class="stack">
         <label class="photo-picker">
-          <input name="photo" type="file" accept="image/*" capture="environment" required>
-          <span>点这里拍照或选相册</span>
+          <input name="photo" type="file" accept="image/*" capture="environment">
+          <span>拍照或选相册</span>
+          <small>配置 AI 后可自动估算热量</small>
         </label>
         <div class="segmented">
           ${["早餐", "午餐", "晚餐", "加餐"].map((meal, index) => `
             <label><input type="radio" name="meal" value="${meal}" ${index === 1 ? "checked" : ""}><span>${meal}</span></label>
           `).join("")}
         </div>
-        <input name="note" class="text-input" placeholder="可选备注，比如半碗米饭">
-        <input name="kcal" class="text-input" type="number" inputmode="numeric" placeholder="可选 kcal">
-        <button class="primary-button">保存照片</button>
+        <input name="note" class="text-input" placeholder="备注，比如半碗米饭">
+        <label class="unit-input">
+          <input name="kcal" class="text-input" type="number" inputmode="numeric" placeholder="手动填写或 AI 自动生成">
+          <span>kcal</span>
+        </label>
+        <button class="primary-button">保存记录</button>
       </form>
     </section>
+
+    <section class="card">
+      <div class="section-title">
+        <h2>今日运动</h2>
+        <span>${summary.exerciseCalories} kcal</span>
+      </div>
+      ${renderExerciseForm()}
+    </section>
+
     <section class="feed">
-      ${state.foodEntries.length ? state.foodEntries.map(renderFoodEntry).join("") : emptyState("还没有饮食照片", "下一餐拍一下就好，不用写很多字。")}
+      ${state.foodEntries.length ? state.foodEntries.map(renderFoodEntry).join("") : emptyState("还没有饮食记录", "下一餐拍一下，AI 会先给一个可修改的估算。")}
+      ${state.exerciseEntries.length ? state.exerciseEntries.map(renderExerciseEntry).join("") : ""}
     </section>
   `;
 }
 
+function renderMealCard(meal) {
+  const kcal = state.foodEntries
+    .filter((entry) => entry.meal === meal)
+    .reduce((sum, entry) => sum + Number(entry.kcal || 0), 0);
+  return `<article class="meal-card"><span>${meal}</span><strong>${kcal}</strong><small>kcal</small></article>`;
+}
+
+function renderExerciseForm() {
+  return `
+    <form id="exercise-form" class="stack compact-stack">
+      <div class="chips">
+        ${EXERCISES.slice(0, 8).map((exercise, index) => `
+          <label>
+            <input type="radio" name="exercise" value="${exercise.name}" data-met="${exercise.met}" ${index === 0 ? "checked" : ""}>
+            <span>${exercise.name}</span>
+          </label>
+        `).join("")}
+      </div>
+      <input name="customName" class="text-input" placeholder="也可以自己写运动名">
+      <div class="grid-two compact">
+        <label class="unit-input">
+          <input name="minutes" class="text-input" type="number" inputmode="numeric" value="30" aria-label="运动分钟数">
+          <span>分钟</span>
+        </label>
+        <select name="intensity" class="text-input">
+          <option value="easy">轻松</option>
+          <option value="normal" selected>中等</option>
+          <option value="hard">较累</option>
+        </select>
+      </div>
+      <label class="unit-input">
+        <input name="manualKcal" class="text-input" type="number" inputmode="numeric" placeholder="可选：自己填">
+        <span>kcal</span>
+      </label>
+      <button class="secondary-button">添加运动</button>
+    </form>
+  `;
+}
+
 function renderFoodEntry(entry) {
+  const status = foodStatusLabel(entry);
   return `
     <article class="food-card">
-      <img src="${escapeAttr(entry.imageDataUrl)}" alt="${escapeAttr(entry.meal)}">
+      ${entry.imageDataUrl ? `<img src="${escapeAttr(entry.imageDataUrl)}" alt="${escapeAttr(entry.meal)}">` : `<div class="food-placeholder">kcal</div>`}
       <div>
-        <strong>${escapeHtml(entry.meal)}</strong>
-        <p>${entry.note ? escapeHtml(entry.note) : "未写备注"}</p>
-        <small>${entry.kcal ? `${entry.kcal} kcal` : "未填热量"}</small>
+        <div class="entry-title">
+          <strong>${escapeHtml(entry.meal)}</strong>
+          <label class="inline-kcal">
+            <input data-food-kcal="${escapeAttr(entry.id)}" type="number" inputmode="numeric" value="${escapeAttr(entry.kcal ?? "")}" aria-label="修改饮食热量">
+            <span>kcal</span>
+          </label>
+        </div>
+        <p>${entry.note ? escapeHtml(entry.note) : renderAnalysisItems(entry)}</p>
+        <small>${status}</small>
       </div>
     </article>
   `;
 }
 
-function renderExercise() {
-  return `
-    <section class="card">
-      <div class="section-title">
-        <h2>我的运动</h2>
-        <span>快捷估算</span>
-      </div>
-      <form id="exercise-form" class="stack">
-        <div class="chips">
-          ${EXERCISES.map((exercise, index) => `
-            <label>
-              <input type="radio" name="exercise" value="${exercise.name}" data-met="${exercise.met}" ${index === 0 ? "checked" : ""}>
-              <span>${exercise.name}</span>
-            </label>
-          `).join("")}
-        </div>
-        <input name="customName" class="text-input" placeholder="没有的话，自己写运动名">
-        <div class="grid-two compact">
-          <label class="unit-input">
-            <input name="minutes" class="text-input" type="number" inputmode="numeric" value="30" aria-label="运动分钟数">
-            <span>分钟</span>
-          </label>
-          <select name="intensity" class="text-input">
-            <option value="easy">轻松</option>
-            <option value="normal" selected>中等</option>
-            <option value="hard">较累</option>
-          </select>
-        </div>
-        <label class="unit-input">
-          <input name="manualKcal" class="text-input" type="number" inputmode="numeric" placeholder="可选：自己填" aria-label="手动填写消耗千卡">
-          <span>kcal</span>
-        </label>
-        <button class="primary-button">添加运动</button>
-      </form>
-    </section>
-    <section class="feed">
-      ${state.exerciseEntries.length ? state.exerciseEntries.map(renderExerciseEntry).join("") : emptyState("今天还没记运动", "快走、瑜伽、家务都可以算一点。")}
-    </section>
-  `;
+function renderAnalysisItems(entry) {
+  if (!Array.isArray(entry.analysisItems) || !entry.analysisItems.length) return "未写备注";
+  return entry.analysisItems.map((item) => `${item.name} ${item.kcal}kcal`).join(" · ");
+}
+
+function foodStatusLabel(entry) {
+  if (entry.analysisStatus === "pending") return "AI 正在估算";
+  if (entry.analysisStatus === "done") return `AI 估算，可修改 · ${confidenceLabel(entry.analysisConfidence)}`;
+  if (entry.analysisStatus === "failed") return entry.analysisSummary || "分析失败，可手动填写";
+  return entry.analysisSource === "manual" ? "手动记录" : "本地记录";
 }
 
 function renderExerciseEntry(entry) {
   const kcal = entry.manualKcal || entry.estimatedKcal;
   return `
-    <article class="list-card">
+    <article class="list-card exercise-entry">
       <div>
         <strong>${escapeHtml(entry.name)}</strong>
         <p>${entry.minutes} 分钟 · ${intensityLabel(entry.intensity)}</p>
@@ -253,58 +253,123 @@ function renderExerciseEntry(entry) {
   `;
 }
 
-function renderTrends() {
+function renderFasting() {
+  const plan = getFastingPlan();
+  const status = getFastingStatus({ plan });
+  const latest = [...state.fastingLogs].sort((a, b) => String(b.createdAt ?? b.id).localeCompare(String(a.createdAt ?? a.id)))[0];
+  return `
+    <section class="card fasting-hero">
+      <p class="muted">当前方案 ${plan.planType}</p>
+      <h2>${status.label}</h2>
+      <div class="fasting-clock">${status.remainingMs === null ? "--" : formatDuration(status.remainingMs)}</div>
+      <p class="note">${status.status === "eating" ? "距离进食窗口结束" : "距离可以进食"}</p>
+      <div class="button-row">
+        <button class="primary-button" data-action="start-fasting">开始断食</button>
+        <button class="secondary-button" data-action="end-fasting">结束断食</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">
+        <h2>轻断食计划</h2>
+        <span>${plan.eatingWindowStart}-${plan.eatingWindowEnd}</span>
+      </div>
+      <div class="segmented">
+        ${["14:10", "16:8", "18:6"].map((type) => `
+          <label><input type="radio" name="planType" data-fasting-plan="${type}" value="${type}" ${plan.planType === type ? "checked" : ""}><span>${type}</span></label>
+        `).join("")}
+      </div>
+      <div class="grid-two compact time-grid">
+        <label class="mini-card"><span>开始吃饭</span><input data-profile-field="eatingWindowStart" type="time" value="${escapeAttr(plan.eatingWindowStart)}"></label>
+        <label class="mini-card"><span>结束吃饭</span><input data-profile-field="eatingWindowEnd" type="time" value="${escapeAttr(plan.eatingWindowEnd)}"></label>
+      </div>
+      <p class="note">身体不舒服就先停下，不需要硬撑。第一版只记录状态，不做推送提醒。</p>
+    </section>
+
+    <section class="feed">
+      ${latest ? renderFastingLog(latest) : emptyState("今天还没有断食记录", "点开始断食后，这里会保存今天的状态。")}
+    </section>
+  `;
+}
+
+function renderFastingLog(log) {
+  return `
+    <article class="list-card">
+      <div>
+        <strong>${escapeHtml(log.planType)}</strong>
+        <p>${escapeHtml(statusLabel(log.status))} · ${formatShortTime(log.fastingStartAt)} 到 ${formatShortTime(log.fastingEndAt)}</p>
+      </div>
+      <span>${escapeHtml(log.date)}</span>
+    </article>
+  `;
+}
+
+function renderProfile() {
+  const log = state.dailyLog;
+  const bmi = calculateBmi({ weightKg: Number(log.weightKg || state.profile.weightKg), heightCm: Number(state.profile.heightCm) });
   const sortedLogs = [...state.dailyLogs].sort((a, b) => a.date.localeCompare(b.date));
   const lastLogs = [...sortedLogs].reverse().slice(0, 7);
   const chartLogs = [...lastLogs].reverse();
-  const weights = lastLogs.map((log) => Number(log.weightKg)).filter(Boolean);
-  const firstWeight = sortedLogs.map((log) => Number(log.weightKg)).find(Boolean) || Number(state.profile.weightKg);
-  const currentWeight = weights[0] || Number(state.dailyLog.weightKg || state.profile.weightKg);
-  const chartPoints = createWeightChartPoints(chartLogs);
-  const targetWeight = state.profile.targetWeightKg;
+  const weights = lastLogs.map((item) => Number(item.weightKg)).filter(Boolean);
+  const firstWeight = sortedLogs.map((item) => Number(item.weightKg)).find(Boolean) || Number(state.profile.weightKg);
+  const currentWeight = Number(log.weightKg || weights[0] || state.profile.weightKg);
   const remainingKg = calculateGoalRemainingKg({
     startKg: firstWeight,
     currentKg: currentWeight,
-    targetKg: targetWeight
+    targetKg: state.profile.targetWeightKg
   });
+  const chartPoints = createWeightChartPoints(chartLogs);
+  const waterTarget = Number(state.profile.waterTargetMl || WATER_TARGET_ML);
 
   return `
+    <section class="card profile-hero">
+      <div>
+        <p class="muted">身体档案</p>
+        <label class="weight-line weight-edit">
+          <input data-log-field="weightKg" type="number" inputmode="decimal" step="0.01" value="${escapeAttr(formatWeightInput(log.weightKg))}" aria-label="今日体重 kg">
+          <span>kg</span>
+        </label>
+        <p class="muted">${log.weightKg ? `${kgToJin(Number(log.weightKg))} 斤 · BMI ${bmi ?? "-"}` : "记录今天体重"}</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">
+        <h2>目标</h2>
+        <span>${remainingKg === null ? "-- kg" : `还差 ${formatWeightKg(remainingKg)} kg`}</span>
+      </div>
+      <div class="grid-two compact">
+        <label class="mini-card"><span>身高 cm</span><input data-profile-field="heightCm" type="number" inputmode="decimal" value="${escapeAttr(state.profile.heightCm)}"></label>
+        <label class="mini-card"><span>目标 kg</span><input data-profile-field="targetWeightKg" type="number" inputmode="decimal" step="0.01" value="${escapeAttr(formatWeightInput(state.profile.targetWeightKg))}"></label>
+        <label class="mini-card"><span>热量预算 kcal</span><input data-profile-field="dailyCalorieBudget" type="number" inputmode="numeric" value="${escapeAttr(state.profile.dailyCalorieBudget)}"></label>
+        <label class="mini-card"><span>饮水目标 ml</span><input data-profile-field="waterTargetMl" type="number" inputmode="numeric" step="${WATER_STEP_ML}" value="${escapeAttr(waterTarget)}"></label>
+      </div>
+    </section>
+
+    <section class="card water-card">
+      <div class="section-title">
+        <h2>饮水量</h2>
+        <span>${Number(log.waterMl || 0)} / ${waterTarget} ml</span>
+      </div>
+      <div class="water-controls">
+        <button class="round-button" data-water-delta="-1" aria-label="减少 ${WATER_STEP_ML} 毫升">-</button>
+        <input class="water-range" data-water-range type="range" min="0" max="${waterTarget}" step="${WATER_STEP_ML}" value="${Number(log.waterMl || 0)}" aria-label="饮水量 ml">
+        <button class="round-button" data-water-delta="1" aria-label="增加 ${WATER_STEP_ML} 毫升">+</button>
+      </div>
+    </section>
+
     <section class="card trend-card">
       <div class="section-title">
-        <p class="muted">最近 7 天</p>
+        <h2>最近 7 天</h2>
         <span>${lastLogs.length} 天</span>
       </div>
       ${renderWeightChart(chartPoints)}
-      <p class="note">${chartPoints.length ? `当前 ${formatWeightKg(currentWeight)} kg，只看轻趋势，不追单日数字。` : "记录几天体重后，这里会显示折线趋势。"}</p>
-    </section>
-    <section class="card goal-card">
-      <div class="section-title">
-        <h2>距离完成目标还差</h2>
-        <span>${remainingKg === null ? "-- kg" : `${formatWeightKg(remainingKg)} kg`}</span>
-      </div>
-      <label class="target-input-row">
-        <span>目标</span>
-        <input data-profile-field="targetWeightKg" type="number" inputmode="decimal" step="0.01" value="${escapeAttr(formatWeightInput(targetWeight))}" placeholder="可选">
-        <span>kg</span>
-      </label>
-      <p class="note">${remainingKg === null ? "填一个健康目标体重后，这里会显示还差多少 kg。" : `按当前 ${formatWeightKg(currentWeight)} kg 到目标 ${formatWeightKg(targetWeight)} kg 估算。`}</p>
-    </section>
-    <section class="feed">
-      ${lastLogs.length ? lastLogs.map((log) => `
-        <article class="list-card">
-          <div><strong>${log.date}</strong><p>饮水 ${log.waterMl ?? 0} ml</p></div>
-          <span>${formatWeightKg(log.weightKg)} kg</span>
-        </article>
-      `).join("") : emptyState("趋势还在生成", "记录几天后这里会更有用。")}
     </section>
   `;
 }
 
 function renderWeightChart(points) {
-  if (!points.length) {
-    return `<div class="chart-empty">暂无体重记录</div>`;
-  }
-
+  if (!points.length) return `<div class="chart-empty">暂无体重记录</div>`;
   const polyline = points.map((point) => `${point.x},${point.y}`).join(" ");
   return `
     <svg class="weight-chart" viewBox="0 0 300 120" role="img" aria-label="最近 7 天体重折线图">
@@ -324,10 +389,9 @@ function renderWeightChart(points) {
 
 function renderBottomNav() {
   const tabs = [
-    ["today", "今日"],
-    ["food", "饮食"],
-    ["exercise", "运动"],
-    ["trends", "趋势"]
+    ["record", "记录"],
+    ["fasting", "轻断食"],
+    ["profile", "档案"]
   ];
   return `<nav class="bottom-nav">${tabs.map(([id, label]) => `<button class="${state.tab === id ? "active" : ""}" data-tab="${id}">${label}</button>`).join("")}</nav>`;
 }
@@ -344,13 +408,16 @@ function bindEvents() {
     input.addEventListener("change", async () => {
       const key = input.dataset.logField;
       state.dailyLog[key] = input.value;
-      if (["weightKg"].includes(key)) state.profile.weightKg = Number(input.value || state.profile.weightKg);
-      await store.saveProfile(state.profile);
-      await store.saveDailyLog(normalizeDailyLog(state.dailyLog));
-      await loadDailyLogs();
-      state.syncMessage = "本地已保存";
-      await tryAutoSync();
-      render();
+      if (key === "weightKg") state.profile.weightKg = Number(input.value || state.profile.weightKg);
+      await saveProfileAndLog("本地已保存");
+    });
+  });
+
+  document.querySelectorAll("[data-profile-field]").forEach((input) => {
+    input.addEventListener("change", async () => {
+      state.profile[input.dataset.profileField] = input.value;
+      state.profile = normalizeProfile(state.profile);
+      await saveProfileAndLog("档案已本地保存");
     });
   });
 
@@ -364,48 +431,103 @@ function bindEvents() {
     await updateWaterMl(Number(event.target.value));
   });
 
-  document.querySelectorAll("[data-profile-field]").forEach((input) => {
+  document.querySelectorAll("[data-fasting-plan]").forEach((input) => {
     input.addEventListener("change", async () => {
-      state.profile[input.dataset.profileField] = input.value;
-      await store.saveProfile(state.profile);
-      state.syncMessage = "目标已本地保存";
-      await tryAutoSync();
-      render();
+      applyFastingPreset(input.value);
+      await saveProfileAndLog("轻断食计划已保存");
     });
   });
 
+  document.querySelectorAll("[data-food-kcal]").forEach((input) => {
+    input.addEventListener("change", async () => {
+      await updateFoodKcal(input.dataset.foodKcal, input.value);
+    });
+  });
+
+  document.querySelector("[data-action='start-fasting']")?.addEventListener("click", startFasting);
+  document.querySelector("[data-action='end-fasting']")?.addEventListener("click", endFasting);
   document.querySelector("#food-form")?.addEventListener("submit", saveFood);
   document.querySelector("#exercise-form")?.addEventListener("submit", saveExercise);
   document.querySelector("[data-action='open-sync']")?.addEventListener("click", openSyncDialog);
 }
 
-async function updateWaterMl(value) {
-  state.dailyLog.waterMl = Number(value) || 0;
-  state.syncMessage = "饮水量已本地保存";
-  render();
+async function saveProfileAndLog(message) {
+  await store.saveProfile(state.profile);
   await store.saveDailyLog(normalizeDailyLog(state.dailyLog));
   await loadDailyLogs();
+  state.syncMessage = message;
   await tryAutoSync();
+  render();
+}
+
+async function updateWaterMl(value) {
+  state.dailyLog.waterMl = Math.min(Number(state.profile.waterTargetMl || WATER_TARGET_ML), Number(value) || 0);
+  await saveProfileAndLog("饮水量已本地保存");
 }
 
 async function saveFood(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const file = form.get("photo");
-  if (!file || !file.size) return;
-  const imageDataUrl = await fileToDataUrl(file);
-  await store.saveFoodEntry({
+  const imageDataUrl = file?.size ? await fileToDataUrl(file) : "";
+  const manualKcal = form.get("kcal") ? Number(form.get("kcal")) : null;
+  const entry = {
     id: createLocalId(),
     date: today,
     meal: form.get("meal"),
     imageDataUrl,
     note: form.get("note") ?? "",
-    kcal: form.get("kcal") ? Number(form.get("kcal")) : null,
-    analysisStatus: "none",
-    estimatedItems: []
+    kcal: manualKcal,
+    analysisStatus: imageDataUrl ? "pending" : "none",
+    analysisSource: manualKcal ? "manual" : "manual",
+    analysisItems: [],
+    analysisSummary: "",
+    analysisConfidence: "low"
+  };
+
+  await store.saveFoodEntry(entry);
+  await loadDay();
+  state.syncMessage = imageDataUrl ? "照片已保存，准备分析" : "饮食已本地保存";
+  render();
+
+  if (!imageDataUrl || manualKcal) {
+    await tryAutoSync();
+    return;
+  }
+
+  const analysis = await analyzeFoodPhoto({
+    config: state.syncConfig,
+    imageDataUrl,
+    meal: entry.meal,
+    note: entry.note,
+    accessToken: state.session?.access_token || ""
+  });
+  await store.saveFoodEntry({
+    ...entry,
+    kcal: analysis.totalKcal,
+    analysisStatus: analysis.ok ? "done" : "failed",
+    analysisSource: analysis.ok ? "ai" : "manual",
+    analysisItems: analysis.items,
+    analysisSummary: analysis.summary,
+    analysisConfidence: analysis.confidence
   });
   await loadDay();
-  state.syncMessage = "照片已本地保存";
+  state.syncMessage = analysis.ok ? "AI 已估算，可按实际修改" : analysis.summary;
+  await tryAutoSync();
+  render();
+}
+
+async function updateFoodKcal(id, value) {
+  const entry = state.foodEntries.find((item) => item.id === id);
+  if (!entry) return;
+  await store.saveFoodEntry({
+    ...entry,
+    kcal: value ? Number(value) : null,
+    analysisSource: entry.analysisSource === "ai" ? "ai" : "manual",
+    analysisSummary: entry.analysisSource === "ai" ? "AI 估算已手动调整" : entry.analysisSummary
+  });
+  await loadDay();
+  state.syncMessage = "热量已本地保存";
   await tryAutoSync();
   render();
 }
@@ -439,9 +561,40 @@ async function saveExercise(event) {
   render();
 }
 
+async function startFasting() {
+  const plan = getFastingPlan();
+  await store.saveFastingLog(createFastingLog({
+    id: createLocalId(),
+    date: today,
+    planType: plan.planType,
+    eatingWindowStart: plan.eatingWindowStart,
+    eatingWindowEnd: plan.eatingWindowEnd
+  }));
+  await loadDay();
+  state.syncMessage = "轻断食已开始记录";
+  await tryAutoSync();
+  render();
+}
+
+async function endFasting() {
+  const plan = getFastingPlan();
+  const log = createFastingLog({
+    id: createLocalId(),
+    date: today,
+    planType: plan.planType,
+    eatingWindowStart: plan.eatingWindowStart,
+    eatingWindowEnd: plan.eatingWindowEnd
+  });
+  await store.saveFastingLog({ ...log, status: "completed", fastingEndAt: localNowIso() });
+  await loadDay();
+  state.syncMessage = "轻断食记录已结束";
+  await tryAutoSync();
+  render();
+}
+
 async function openSyncDialog() {
   const current = getSyncConfig();
-  const url = prompt("Supabase URL（不填则继续本地使用）", current.url);
+  const url = prompt("Supabase URL（用于同步和 AI 分析，不填则继续本地使用）", current.url);
   if (url === null) return;
   const anonKey = prompt("Supabase anon key", current.anonKey);
   if (anonKey === null) return;
@@ -452,7 +605,7 @@ async function openSyncDialog() {
   if (!sync.isConfigured) {
     state.syncMessage = "继续本地保存";
   } else if (!state.session) {
-    const email = prompt("输入邮箱，发送登录链接");
+    const email = prompt("输入邮箱，发送登录链接；只用 AI 可先取消");
     if (email) {
       try {
         await sync.sendMagicLink(email.trim());
@@ -460,6 +613,8 @@ async function openSyncDialog() {
       } catch (error) {
         state.syncMessage = error.message;
       }
+    } else {
+      state.syncMessage = "AI 配置已保存";
     }
   } else {
     await syncAll();
@@ -490,7 +645,7 @@ async function syncAll() {
     date: log.date,
     weight_kg: log.weightKg,
     water_ml: log.waterMl,
-    intake_calories: log.intakeCalories,
+    intake_calories: getFoodCaloriesForDate(log.date),
     updated_at: log.updatedAt ?? new Date().toISOString()
   }));
   await sync.upsert("profiles", [{
@@ -499,6 +654,11 @@ async function syncAll() {
     height_cm: state.profile.heightCm,
     weight_kg: state.profile.weightKg,
     target_weight_kg: state.profile.targetWeightKg || null,
+    daily_calorie_budget: state.profile.dailyCalorieBudget,
+    water_target_ml: state.profile.waterTargetMl,
+    fasting_plan_type: state.profile.fastingPlanType,
+    eating_window_start: state.profile.eatingWindowStart,
+    eating_window_end: state.profile.eatingWindowEnd,
     updated_at: new Date().toISOString()
   }]);
   const foodEntries = (await store.listAllFoodEntries()).map((entry) => ({
@@ -509,6 +669,11 @@ async function syncAll() {
     image_data_url: entry.imageDataUrl,
     note: entry.note,
     kcal: entry.kcal,
+    analysis_status: entry.analysisStatus,
+    analysis_source: entry.analysisSource,
+    analysis_items: entry.analysisItems ?? [],
+    analysis_summary: entry.analysisSummary,
+    analysis_confidence: entry.analysisConfidence,
     updated_at: entry.updatedAt ?? new Date().toISOString()
   }));
   const exerciseEntries = (await store.listAllExerciseEntries()).map((entry) => ({
@@ -522,19 +687,73 @@ async function syncAll() {
     manual_kcal: entry.manualKcal,
     updated_at: entry.updatedAt ?? new Date().toISOString()
   }));
+  const fastingLogs = (await store.listAllFastingLogs()).map((entry) => ({
+    id: entry.id,
+    user_id: userId,
+    date: entry.date,
+    plan_type: entry.planType,
+    fasting_start_at: entry.fastingStartAt,
+    fasting_end_at: entry.fastingEndAt,
+    eating_start_at: entry.eatingStartAt,
+    eating_end_at: entry.eatingEndAt,
+    status: entry.status,
+    updated_at: entry.updatedAt ?? new Date().toISOString()
+  }));
   await sync.upsert("daily_logs", dailyLogs);
   await sync.upsert("food_entries", foodEntries);
   await sync.upsert("exercise_entries", exerciseEntries);
+  await sync.upsert("fasting_logs", fastingLogs);
   state.syncMessage = "已同步";
 }
 
-function fieldCard(label, key, value, type, placeholder, step = null) {
-  return `
-    <label class="mini-card">
-      <span>${label}</span>
-      <input data-log-field="${key}" type="${type}" inputmode="decimal" ${step ? `step="${step}"` : ""} value="${escapeAttr(key === "weightKg" ? formatWeightInput(value) : value)}" placeholder="${placeholder}">
-    </label>
-  `;
+function getTodaySummary() {
+  const intakeCalories = totalFoodCalories();
+  const exerciseCalories = totalExerciseCalories();
+  const baseCalories = estimateBaseCalories({
+    weightKg: Number(state.dailyLog.weightKg || state.profile.weightKg),
+    heightCm: Number(state.profile.heightCm)
+  });
+  const budget = Number(state.profile.dailyCalorieBudget || DAILY_CALORIE_BUDGET);
+  const deficit = calculateTodayDeficit({ baseCalories, exerciseCalories, intakeCalories });
+  const remainingCalories = calculateCalorieRemaining({ budget, intakeCalories });
+  const budgetProgress = budget ? Math.min(100, Math.round((intakeCalories / budget) * 100)) : 0;
+  return { intakeCalories, exerciseCalories, baseCalories, budget, deficit, remainingCalories, budgetProgress };
+}
+
+function normalizeProfile(profile) {
+  const defaults = createDefaultFastingPlan();
+  return {
+    nickname: "",
+    heightCm: 156,
+    weightKg: 51,
+    targetWeightKg: "",
+    dailyCalorieBudget: DAILY_CALORIE_BUDGET,
+    waterTargetMl: WATER_TARGET_ML,
+    fastingPlanType: defaults.planType,
+    eatingWindowStart: defaults.eatingWindowStart,
+    eatingWindowEnd: defaults.eatingWindowEnd,
+    ...(profile ?? {})
+  };
+}
+
+function getFastingPlan() {
+  return {
+    planType: state.profile.fastingPlanType || "16:8",
+    eatingWindowStart: state.profile.eatingWindowStart || "12:00",
+    eatingWindowEnd: state.profile.eatingWindowEnd || "20:00"
+  };
+}
+
+function applyFastingPreset(planType) {
+  const windows = {
+    "14:10": ["10:00", "20:00"],
+    "16:8": ["12:00", "20:00"],
+    "18:6": ["12:00", "18:00"]
+  };
+  const [start, end] = windows[planType] ?? [state.profile.eatingWindowStart, state.profile.eatingWindowEnd];
+  state.profile.fastingPlanType = planType;
+  state.profile.eatingWindowStart = start;
+  state.profile.eatingWindowEnd = end;
 }
 
 function normalizeDailyLog(log) {
@@ -542,28 +761,62 @@ function normalizeDailyLog(log) {
     ...log,
     weightKg: log.weightKg ? Number(log.weightKg) : null,
     waterMl: log.waterMl ? Number(log.waterMl) : 0,
-    intakeCalories: log.intakeCalories ? Number(log.intakeCalories) : null
+    intakeCalories: totalFoodCalories()
   };
+}
+
+function migrateDailyLog(log) {
+  if ("waterMl" in log) return log;
+  const waterMl = log.waterCups ? Number(log.waterCups) * 250 : 0;
+  const { waterCups, mood, sleepHours, steps, intakeCalories, ...rest } = log;
+  return { ...rest, waterMl, intakeCalories };
+}
+
+function totalFoodCalories() {
+  return state.foodEntries.reduce((sum, entry) => sum + Number(entry.kcal || 0), 0);
 }
 
 function totalExerciseCalories() {
   return state.exerciseEntries.reduce((sum, entry) => sum + Number(entry.manualKcal || entry.estimatedKcal || 0), 0);
 }
 
+function getFoodCaloriesForDate(date) {
+  if (date === today) return totalFoodCalories();
+  return null;
+}
+
 function intensityLabel(value) {
   return { easy: "轻松", normal: "中等", hard: "较累" }[value] ?? "中等";
 }
 
-function migrateDailyLog(log) {
-  if ("waterMl" in log) return log;
-  const waterMl = log.waterCups ? Number(log.waterCups) * 250 : 0;
-  const { waterCups, mood, sleepHours, steps, ...rest } = log;
-  return { ...rest, waterMl };
+function confidenceLabel(value) {
+  return { low: "低置信度", medium: "中置信度", high: "高置信度" }[value] ?? "中置信度";
+}
+
+function statusLabel(value) {
+  return { idle: "未开始", fasting: "断食中", eating: "进食中", completed: "已结束" }[value] ?? "记录";
 }
 
 function formatWeightInput(value) {
   const formatted = formatWeightKg(value);
   return formatted === "-" ? "" : formatted;
+}
+
+function formatShortTime(value) {
+  if (!value) return "--:--";
+  return String(value).slice(11, 16);
+}
+
+function localNowIso() {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  const second = String(date.getSeconds()).padStart(2, "0");
+  const ms = String(date.getMilliseconds()).padStart(3, "0");
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}.${ms}`;
 }
 
 function fileToDataUrl(file) {
