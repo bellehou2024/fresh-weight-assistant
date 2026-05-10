@@ -639,29 +639,52 @@ async function openSyncDialog() {
   if (!sync.isConfigured) {
     state.syncMessage = "继续本地保存";
   } else if (!state.session) {
-    const email = prompt("输入邮箱，发送登录链接");
-    if (email) {
-      try {
-        await sync.sendMagicLink(email.trim());
-        state.syncMessage = "登录邮件已发送，请在手机上打开邮件链接";
-      } catch (error) {
+    await requestLoginLink(sync);
+  } else {
+    try {
+      await syncAll();
+    } catch (error) {
+      if (isAuthExpiredError(error)) {
+        sync.clearSession();
+        state.session = null;
+        state.syncMessage = error.message;
+        await requestLoginLink(sync);
+      } else {
         state.syncMessage = error.message;
       }
     } else {
       state.syncMessage = "未登录，记录继续保存在本机";
     }
-  } else {
-    await syncAll();
   }
   render();
+}
+
+async function requestLoginLink(sync) {
+  const email = prompt("输入邮箱，发送登录链接");
+  if (email) {
+    try {
+      await sync.sendMagicLink(email.trim());
+      state.syncMessage = "登录邮件已发送，请在手机上打开邮件链接";
+    } catch (error) {
+      state.syncMessage = error.message;
+    }
+  } else {
+    state.syncMessage = "未登录，记录继续保存在本机";
+  }
 }
 
 async function tryAutoSync() {
   if (!state.syncConfig.url || !state.session) return;
   try {
     await syncAll({ pullFirst: false });
-  } catch {
-    state.syncMessage = "本地已保存，稍后再同步";
+  } catch (error) {
+    if (isAuthExpiredError(error)) {
+      createSyncService(state.syncConfig).clearSession();
+      state.session = null;
+      state.syncMessage = error.message;
+    } else {
+      state.syncMessage = "本地已保存，稍后再同步";
+    }
   }
 }
 
@@ -836,6 +859,10 @@ function shouldUseRemote(localEntry, remoteUpdatedAt) {
   if (!localEntry) return true;
   if (!remoteUpdatedAt || !localEntry.updatedAt) return true;
   return new Date(remoteUpdatedAt).getTime() >= new Date(localEntry.updatedAt).getTime();
+}
+
+function isAuthExpiredError(error) {
+  return error?.message?.includes("登录已过期");
 }
 
 function mapRemoteProfile(row) {
