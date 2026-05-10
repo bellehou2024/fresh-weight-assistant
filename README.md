@@ -63,7 +63,7 @@ supabase secrets set OPENAI_API_KEY=sk-...
 supabase secrets set OPENAI_VISION_MODEL=gpt-5.4-mini
 ```
 
-5. 打开 App，点右上角“同步”，填入 Supabase URL 和 anon key。
+5. 打开 App，点右上角“同步”，输入邮箱并打开登录邮件。
 
 只用 AI 分析时可以不登录；要跨设备同步时，再输入邮箱登录。
 
@@ -77,8 +77,7 @@ supabase secrets set OPENAI_VISION_MODEL=gpt-5.4-mini
 2. 在 Supabase SQL Editor 执行 `supabase/schema.sql`。
 3. 在 Supabase Auth 里启用邮箱登录。
 4. 打开 App，点右上角“同步”。
-5. 填入 Supabase URL 和 anon key。
-6. 输入邮箱，打开登录邮件链接。
+5. 输入邮箱，打开登录邮件链接。
 
 同一账号在 iPhone 和鸿蒙登录后，可以同步记录。
 
