@@ -1,9 +1,9 @@
-const CACHE_NAME = "fresh-weight-assistant-v21";
+const CACHE_NAME = "fresh-weight-assistant-v22";
 const ASSET_PATHS = [
   "/",
   "/index.html",
   "/404.html",
-  "/src/main.js",
+  "/src/main.js?v=20260510-syncfix",
   "/src/styles.css",
   "/src/pwa.js",
   "/src/domain/fasting.js",
