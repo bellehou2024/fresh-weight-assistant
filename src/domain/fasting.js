@@ -86,6 +86,10 @@ export function getVisibleFastingStatus({ plan, latestLog, now = new Date() }) {
   return getFastingStatus({ plan, now });
 }
 
+export function getFastingRefreshIntervalMs(status) {
+  return ["fasting", "eating"].includes(status?.status) ? 30000 : null;
+}
+
 export function formatDuration(ms) {
   const minutes = Math.max(0, Math.ceil(Number(ms || 0) / MINUTE_MS));
   const hours = Math.floor(minutes / 60);
