@@ -51,6 +51,17 @@ async function boot() {
   await loadDay();
   await loadDailyLogs();
   state.session = createSyncService().handleAuthRedirect();
+  if (state.session) {
+    try {
+      await syncFromCloud();
+      await loadDay();
+      await loadDailyLogs();
+      state.syncMessage = "已从云端恢复记录";
+      await syncAll({ pullFirst: false });
+    } catch {
+      state.syncMessage = "已登录，云端记录稍后再同步";
+    }
+  }
   render();
 }
 
@@ -593,19 +604,14 @@ async function endFasting() {
 }
 
 async function openSyncDialog() {
-  const current = getSyncConfig();
-  const url = prompt("Supabase URL（用于同步和 AI 分析，不填则继续本地使用）", current.url);
-  if (url === null) return;
-  const anonKey = prompt("Supabase anon key", current.anonKey);
-  if (anonKey === null) return;
-  saveSyncConfig({ url: url.trim(), anonKey: anonKey.trim() });
   state.syncConfig = getSyncConfig();
+  saveSyncConfig(state.syncConfig);
   const sync = createSyncService(state.syncConfig);
   state.session = sync.getSession();
   if (!sync.isConfigured) {
     state.syncMessage = "继续本地保存";
   } else if (!state.session) {
-    const email = prompt("输入邮箱，发送登录链接；只用 AI 可先取消");
+    const email = prompt("输入邮箱，发送登录链接");
     if (email) {
       try {
         await sync.sendMagicLink(email.trim());
@@ -614,7 +620,7 @@ async function openSyncDialog() {
         state.syncMessage = error.message;
       }
     } else {
-      state.syncMessage = "AI 配置已保存";
+      state.syncMessage = "未登录，记录继续保存在本机";
     }
   } else {
     await syncAll();
@@ -625,19 +631,24 @@ async function openSyncDialog() {
 async function tryAutoSync() {
   if (!state.syncConfig.url || !state.session) return;
   try {
-    await syncAll();
+    await syncAll({ pullFirst: false });
   } catch {
     state.syncMessage = "本地已保存，稍后再同步";
   }
 }
 
-async function syncAll() {
+async function syncAll({ pullFirst = true } = {}) {
   const sync = createSyncService(state.syncConfig);
   const session = sync.getSession();
   const userId = session?.user?.sub;
   if (!userId) {
     state.syncMessage = "请先用邮箱登录";
     return;
+  }
+  if (pullFirst) {
+    await syncFromCloud();
+    await loadDay();
+    await loadDailyLogs();
   }
   const dailyLogs = (await store.listDailyLogs()).map((log) => ({
     id: `${userId}:${log.date}`,
@@ -706,6 +717,58 @@ async function syncAll() {
   state.syncMessage = "已同步";
 }
 
+async function syncFromCloud() {
+  const sync = createSyncService(state.syncConfig);
+  const session = sync.getSession();
+  const userId = session?.user?.sub;
+  if (!userId) return;
+
+  const [profiles, dailyLogs, foodEntries, exerciseEntries, fastingLogs] = await Promise.all([
+    sync.select("profiles", `id=eq.${userId}&select=*`),
+    sync.select("daily_logs", `user_id=eq.${userId}&select=*`),
+    sync.select("food_entries", `user_id=eq.${userId}&select=*`),
+    sync.select("exercise_entries", `user_id=eq.${userId}&select=*`),
+    sync.select("fasting_logs", `user_id=eq.${userId}&select=*`)
+  ]);
+
+  if (profiles[0]) {
+    const currentProfile = await store.getProfile();
+    const remoteProfile = mapRemoteProfile(profiles[0]);
+    if (shouldUseRemote(currentProfile, remoteProfile.updatedAt)) {
+      state.profile = normalizeProfile(remoteProfile);
+      await store.saveProfile(state.profile);
+    }
+  }
+
+  for (const row of dailyLogs) {
+    const current = await store.getDailyLog(row.date);
+    if (shouldUseRemote(current, row.updated_at)) {
+      await store.saveDailyLog(mapRemoteDailyLog(row));
+    }
+  }
+
+  const localFood = new Map((await store.listAllFoodEntries()).map((entry) => [entry.id, entry]));
+  for (const row of foodEntries) {
+    if (shouldUseRemote(localFood.get(row.id), row.updated_at)) {
+      await store.saveFoodEntry(mapRemoteFoodEntry(row));
+    }
+  }
+
+  const localExercise = new Map((await store.listAllExerciseEntries()).map((entry) => [entry.id, entry]));
+  for (const row of exerciseEntries) {
+    if (shouldUseRemote(localExercise.get(row.id), row.updated_at)) {
+      await store.saveExerciseEntry(mapRemoteExerciseEntry(row));
+    }
+  }
+
+  const localFasting = new Map((await store.listAllFastingLogs()).map((entry) => [entry.id, entry]));
+  for (const row of fastingLogs) {
+    if (shouldUseRemote(localFasting.get(row.id), row.updated_at)) {
+      await store.saveFastingLog(mapRemoteFastingLog(row));
+    }
+  }
+}
+
 function getTodaySummary() {
   const intakeCalories = totalFoodCalories();
   const exerciseCalories = totalExerciseCalories();
@@ -738,6 +801,81 @@ function normalizeProfile(profile) {
     eatingWindowStart: defaults.eatingWindowStart,
     eatingWindowEnd: defaults.eatingWindowEnd,
     ...(profile ?? {})
+  };
+}
+
+function shouldUseRemote(localEntry, remoteUpdatedAt) {
+  if (!localEntry) return true;
+  if (!remoteUpdatedAt || !localEntry.updatedAt) return true;
+  return new Date(remoteUpdatedAt).getTime() >= new Date(localEntry.updatedAt).getTime();
+}
+
+function mapRemoteProfile(row) {
+  return {
+    nickname: row.nickname ?? "",
+    heightCm: row.height_cm ?? 156,
+    weightKg: row.weight_kg ?? 51,
+    targetWeightKg: row.target_weight_kg ?? "",
+    dailyCalorieBudget: row.daily_calorie_budget ?? DAILY_CALORIE_BUDGET,
+    waterTargetMl: row.water_target_ml ?? WATER_TARGET_ML,
+    fastingPlanType: row.fasting_plan_type ?? "16:8",
+    eatingWindowStart: row.eating_window_start ?? "12:00",
+    eatingWindowEnd: row.eating_window_end ?? "20:00",
+    updatedAt: row.updated_at
+  };
+}
+
+function mapRemoteDailyLog(row) {
+  return {
+    date: row.date,
+    weightKg: row.weight_kg,
+    waterMl: row.water_ml,
+    intakeCalories: row.intake_calories,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapRemoteFoodEntry(row) {
+  return {
+    id: row.id,
+    date: row.date,
+    meal: row.meal,
+    imageDataUrl: row.image_data_url,
+    note: row.note,
+    kcal: row.kcal,
+    analysisStatus: row.analysis_status,
+    analysisSource: row.analysis_source,
+    analysisItems: row.analysis_items ?? [],
+    analysisSummary: row.analysis_summary,
+    analysisConfidence: row.analysis_confidence,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapRemoteExerciseEntry(row) {
+  return {
+    id: row.id,
+    date: row.date,
+    name: row.name,
+    minutes: row.minutes,
+    intensity: row.intensity,
+    estimatedKcal: row.estimated_kcal,
+    manualKcal: row.manual_kcal,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapRemoteFastingLog(row) {
+  return {
+    id: row.id,
+    date: row.date,
+    planType: row.plan_type,
+    fastingStartAt: row.fasting_start_at,
+    fastingEndAt: row.fasting_end_at,
+    eatingStartAt: row.eating_start_at,
+    eatingEndAt: row.eating_end_at,
+    status: row.status,
+    updatedAt: row.updated_at
   };
 }
 
