@@ -1,4 +1,4 @@
-const CACHE_NAME = "fresh-weight-assistant-v18";
+const CACHE_NAME = "fresh-weight-assistant-v19";
 const ASSET_PATHS = [
   "/",
   "/index.html",
