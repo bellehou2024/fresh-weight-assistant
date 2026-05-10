@@ -1,19 +1,25 @@
 const CONFIG_KEY = "fresh-weight-assistant-sync-config";
 const SESSION_KEY = "fresh-weight-assistant-session";
+const DEFAULT_SYNC_CONFIG = {
+  url: "https://uttbjtuitizfihuuerox.supabase.co",
+  anonKey: "sb_publishable_EqeGs0PcaaR4t331hxAEUA_sXiYeY4z"
+};
 
 export function getSyncConfig() {
   try {
-    return JSON.parse(localStorage.getItem(CONFIG_KEY)) ?? { url: "", anonKey: "" };
+    const saved = JSON.parse(localStorage.getItem(CONFIG_KEY));
+    return normalizeConfig(saved);
   } catch {
-    return { url: "", anonKey: "" };
+    return { ...DEFAULT_SYNC_CONFIG };
   }
 }
 
 export function saveSyncConfig(config) {
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(normalizeConfig(config)));
 }
 
-export function createSyncService(config = getSyncConfig()) {
+export function createSyncService(config = getSyncConfig(), { fetchImpl = fetch } = {}) {
+  config = normalizeConfig(config);
   const isConfigured = Boolean(config.url && config.anonKey);
 
   return {
@@ -44,7 +50,7 @@ export function createSyncService(config = getSyncConfig()) {
     },
     async sendMagicLink(email) {
       if (!isConfigured) throw new Error("同步未配置");
-      const response = await fetch(`${config.url}/auth/v1/otp`, {
+      const response = await fetchImpl(`${config.url}/auth/v1/otp`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -61,7 +67,7 @@ export function createSyncService(config = getSyncConfig()) {
     async upsert(table, rows) {
       const session = this.getSession();
       if (!isConfigured || !session?.access_token || !rows.length) return;
-      const response = await fetch(`${config.url}/rest/v1/${table}?on_conflict=id`, {
+      const response = await fetchImpl(`${config.url}/rest/v1/${table}?on_conflict=id`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -72,7 +78,27 @@ export function createSyncService(config = getSyncConfig()) {
         body: JSON.stringify(rows)
       });
       if (!response.ok) throw new Error("同步失败");
+    },
+    async select(table, query = "select=*") {
+      const session = this.getSession();
+      if (!isConfigured || !session?.access_token) return [];
+      const response = await fetchImpl(`${config.url}/rest/v1/${table}?${query}`, {
+        method: "GET",
+        headers: {
+          apikey: config.anonKey,
+          Authorization: `Bearer ${session.access_token}`
+        }
+      });
+      if (!response.ok) throw new Error("同步下载失败");
+      return response.json();
     }
+  };
+}
+
+function normalizeConfig(config) {
+  return {
+    url: config?.url || DEFAULT_SYNC_CONFIG.url,
+    anonKey: config?.anonKey || DEFAULT_SYNC_CONFIG.anonKey
   };
 }
 
