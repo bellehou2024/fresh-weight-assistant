@@ -652,8 +652,6 @@ async function openSyncDialog() {
       } else {
         state.syncMessage = error.message;
       }
-    } else {
-      state.syncMessage = "未登录，记录继续保存在本机";
     }
   }
   render();
