@@ -19,6 +19,7 @@ import {
   createDefaultFastingPlan,
   createFastingLog,
   formatDuration,
+  getFastingRefreshIntervalMs,
   getVisibleFastingStatus
 } from "./domain/fasting.js";
 import { createLocalId } from "./domain/id.js";
@@ -30,6 +31,7 @@ import "./pwa.js";
 const store = createLocalStore();
 const app = document.querySelector("#app");
 const today = new Date().toISOString().slice(0, 10);
+let fastingTimerId = null;
 
 const state = {
   tab: "record",
@@ -104,6 +106,7 @@ function render() {
   `;
 
   bindEvents();
+  scheduleFastingRefresh();
 }
 
 function greeting() {
@@ -266,7 +269,7 @@ function renderExerciseEntry(entry) {
 
 function renderFasting() {
   const plan = getFastingPlan();
-  const latest = [...state.fastingLogs].sort((a, b) => String(b.createdAt ?? b.id).localeCompare(String(a.createdAt ?? a.id)))[0];
+  const latest = getLatestFastingLog();
   const status = getVisibleFastingStatus({ plan, latestLog: latest });
   return `
     <section class="card fasting-hero">
@@ -301,6 +304,31 @@ function renderFasting() {
       ${latest ? renderFastingLog(latest) : emptyState("今天还没有断食记录", "点开始断食后，这里会保存今天的状态。")}
     </section>
   `;
+}
+
+function getLatestFastingLog() {
+  return [...state.fastingLogs].sort((a, b) => String(b.createdAt ?? b.id).localeCompare(String(a.createdAt ?? a.id)))[0];
+}
+
+function scheduleFastingRefresh() {
+  if (fastingTimerId) {
+    clearTimeout(fastingTimerId);
+    fastingTimerId = null;
+  }
+
+  if (state.tab !== "fasting") return;
+
+  const status = getVisibleFastingStatus({
+    plan: getFastingPlan(),
+    latestLog: getLatestFastingLog()
+  });
+  const intervalMs = getFastingRefreshIntervalMs(status);
+  if (!intervalMs) return;
+
+  fastingTimerId = setTimeout(() => {
+    fastingTimerId = null;
+    if (state.tab === "fasting") render();
+  }, intervalMs);
 }
 
 function renderFastingLog(log) {
