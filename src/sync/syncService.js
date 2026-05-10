@@ -1,5 +1,6 @@
 const CONFIG_KEY = "fresh-weight-assistant-sync-config";
 const SESSION_KEY = "fresh-weight-assistant-session";
+const AUTH_EXPIRED_MESSAGE = "登录已过期，请重新发送登录邮件";
 const DEFAULT_SYNC_CONFIG = {
   url: "https://uttbjtuitizfihuuerox.supabase.co",
   anonKey: "sb_publishable_EqeGs0PcaaR4t331hxAEUA_sXiYeY4z"
@@ -26,13 +27,25 @@ export function createSyncService(config = getSyncConfig(), { fetchImpl = fetch 
     isConfigured,
     getSession() {
       try {
-        return JSON.parse(localStorage.getItem(SESSION_KEY));
+        const session = JSON.parse(localStorage.getItem(SESSION_KEY));
+        if (isSessionExpired(session)) {
+          this.clearSession();
+          return null;
+        }
+        return normalizeSession(session);
       } catch {
         return null;
       }
     },
     saveSession(session) {
-      localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      if (!session?.access_token) {
+        this.clearSession();
+        return;
+      }
+      localStorage.setItem(SESSION_KEY, JSON.stringify(normalizeSession(session)));
+    },
+    clearSession() {
+      localStorage.removeItem(SESSION_KEY);
     },
     handleAuthRedirect() {
       if (!location.hash.includes("access_token")) return this.getSession();
@@ -77,7 +90,9 @@ export function createSyncService(config = getSyncConfig(), { fetchImpl = fetch 
         },
         body: JSON.stringify(rows)
       });
-      if (!response.ok) throw new Error("同步失败");
+      if (!response.ok) {
+        handleFailedSyncResponse(response, this.clearSession.bind(this), "同步失败");
+      }
     },
     async select(table, query = "select=*") {
       const session = this.getSession();
@@ -89,7 +104,9 @@ export function createSyncService(config = getSyncConfig(), { fetchImpl = fetch 
           Authorization: `Bearer ${session.access_token}`
         }
       });
-      if (!response.ok) throw new Error("同步下载失败");
+      if (!response.ok) {
+        handleFailedSyncResponse(response, this.clearSession.bind(this), "同步下载失败");
+      }
       return response.json();
     }
   };
@@ -102,10 +119,34 @@ function normalizeConfig(config) {
   };
 }
 
+function normalizeSession(session) {
+  if (!session?.access_token) return null;
+  const tokenUser = decodeJwt(session.access_token);
+  return {
+    ...session,
+    user: { ...(tokenUser ?? {}), ...(session.user ?? {}) }
+  };
+}
+
+function isSessionExpired(session, nowMs = Date.now()) {
+  const normalized = normalizeSession(session);
+  const expiresAtSeconds = normalized?.user?.exp;
+  if (!expiresAtSeconds) return false;
+  return expiresAtSeconds * 1000 <= nowMs + 60_000;
+}
+
+function handleFailedSyncResponse(response, clearSession, fallbackMessage) {
+  if (response.status === 401 || response.status === 403) {
+    clearSession();
+    throw new Error(AUTH_EXPIRED_MESSAGE);
+  }
+  throw new Error(fallbackMessage);
+}
+
 function decodeJwt(token) {
   const [, payload] = token.split(".");
   if (!payload) return null;
-  const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+  const normalized = payload.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(payload.length / 4) * 4, "=");
   try {
     return JSON.parse(atob(normalized));
   } catch {
